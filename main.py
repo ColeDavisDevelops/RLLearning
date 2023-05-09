@@ -1,12 +1,12 @@
-from environment import SimpleTradingEnv
 import numpy as np
+from environment import TradingEnv
 import random
 
 
 def data(length): return [random.randint(0, 10000) for _ in range(length)]
 
 
-env = SimpleTradingEnv(data(2000))
+env = TradingEnv(data(100))
 
 # Initialize the Q-table
 q_table = np.zeros((env.observation_space.shape[0], env.action_space.n))
@@ -47,4 +47,6 @@ while not done:
     state, reward, done, _ = env.step(action)
     total_reward += reward
 
+print(f"buys: {env.buy_counter}")
+print(f"sells: {env.sell_counter}")
 print("Total profit: {:.2f}".format(total_reward))
