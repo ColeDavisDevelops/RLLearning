@@ -17,7 +17,11 @@ class TradingEnv(gym.Env):
 
         # Define action and observation space
         self.action_space = gym.spaces.Discrete(3)  # 0: Buy, 1: Sell, 2: Hold
-        self.observation_space = gym.spaces.Box(low=0, high=np.inf, shape=(3,))
+
+        self.observation_space = gym.spaces.Dict({
+            'price': gym.spaces.Box(low=0, high=np.inf, shape=(1,)),
+            'owned': gym.spaces.Discrete(2)
+        })
 
     def reset(self):
         self.current_step = 0
@@ -57,6 +61,7 @@ class TradingEnv(gym.Env):
         if done:
             if self.position == "Bought":
                 self.profit += self.data[self.current_step]
+                self.sell_counter += 1
             reward = self.profit
 
         return self._next_observation(), reward, done, {}

@@ -10,7 +10,8 @@ env = TradingEnv(data(100))
 
 # Initialize the Q-table
 q_table = np.zeros((env.observation_space.shape[0], env.action_space.n))
-# [[0, 0, 0]]
+# (3,3)
+# [[0, 0, 0], [0, 0, 0], [0, 0, 0]]
 
 
 # Set the hyperparameters
@@ -20,7 +21,7 @@ epsilon = 0.1  # exploration rate
 
 # Run the Q-learning algorithm
 for episode in range(1000):
-    env.reset()
+    state = env.reset()
     done = False
 
     while not done:
