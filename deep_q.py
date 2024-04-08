@@ -8,11 +8,14 @@ import tensorflow as tf
 
 class SimpleTradingEnv:
     def __init__(self):
+        self.account_value = 10000
         self.current_step = 0
         self.current_price = 100  # Starting price
         self.done = False
+        self.position = 0
 
     def reset(self):
+        self.account_value = 10000
         self.current_price = 100
         self.current_step = 0
         self.done = False
@@ -23,8 +26,22 @@ class SimpleTradingEnv:
         self.current_price += np.random.randn()
         self.current_step += 1
 
+        if (action == 0):  # Buy
+            if (self.position == 0):
+                self.position = 1
+                self.account_value -= self.current_price
+        elif (action == 1):  # Sell
+            if (self.position == 1):
+                self.position = 0
+                self.account_value += self.current_price
+        else:
+            pass
+
+        self.account_value = self.account_value + \
+            (self.position * self.current_price)
+
         # Reward function (placeholder, needs a proper strategy)
-        reward = self.current_price - 100 if action == 1 else 100 - self.current_price
+        reward = self.account_value
 
         if self.current_step > 5:
             self.done = True
@@ -38,7 +55,7 @@ def create_model():
     model = tf.keras.Sequential([
         tf.keras.layers.Dense(24, activation='relu', input_shape=(1,)),
         tf.keras.layers.Dense(24, activation='relu'),
-        tf.keras.layers.Dense(2, activation='linear')  # 2 actions: Buy, Sell
+        tf.keras.layers.Dense(3, activation='linear')  # 2 actions: Buy, Sell
     ])
     model.compile(loss='mse', optimizer='adam')
     return model
@@ -84,7 +101,7 @@ def select_action(state, model, epsilon):
 # Main Training Loop
 env = SimpleTradingEnv()
 state_size = 1  # Current price
-action_size = 2  # Buy, Sell
+action_size = 3  # Buy, Sell, Hold
 batch_size = 32
 
 model = create_model()
