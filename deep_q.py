@@ -1,38 +1,51 @@
-
 import matplotlib.pyplot as plt
 import numpy as np
 import random
 import tensorflow as tf
+import pandas as pd
 import os  # To handle directory creation
 
 # Parameters
-total_steps = 100               # Total steps per episode
 gamma = 0.95                  # Discount factor for future rewards
 epsilon = 1.0                 # Initial exploration rate
 epsilon_decay = 0.995         # Decay rate for exploration probability
 epsilon_min = 0.01            # Minimum exploration probability
 batch_size = 32               # Batch size for training
-episodes = 8                  # Number of episodes to train
+episodes = 10 # Number of episodes to train
 target_update_freq = 5        # Frequency to update the target network
+episode_length = 200 # Number of steps per episode
 
 # Ensure the results directory exists
 if not os.path.exists('results'):
     os.makedirs('results')
 
+# Read the CSV file containing historical stock prices
+data = pd.read_csv('AAPL.csv')  # Replace with your CSV file name
+
+# Ensure that the 'Close' column exists
+if 'Close' not in data.columns:
+    raise ValueError("The CSV file must contain a 'Close' column with closing prices.")
+
 # Simple Trading Environment
 class SimpleTradingEnv:
-    def __init__(self):
+    def __init__(self, data, episode_length=200):
+        self.data = data.reset_index(drop=True)
+        self.data_length = len(self.data)
+        self.episode_length = episode_length
         self.initial_account_value = 10000
         self.reset()
 
     def reset(self):
         """Resets the environment to the initial state."""
         self.account_value = self.initial_account_value
-        self.current_price = 100  # Starting price
-        self.current_step = 0
+
+        # Randomize the starting point, ensuring enough data for the episode
+        self.start_step = random.randint(0, self.data_length - self.episode_length - 1)
+        self.current_step = self.start_step
         self.done = False
         self.position = 0        # 0: No position, 1: Long position
         self.entry_price = None  # Price at which the position was opened
+        self.current_price = self.data.loc[self.current_step, 'Close']
         return np.array([self.current_price])
 
     def step(self, action):
@@ -40,10 +53,6 @@ class SimpleTradingEnv:
         Takes an action (Buy, Sell, Hold) and updates the environment state.
         Returns the next state, reward, done flag, and info dictionary.
         """
-        # Simulate price change
-        self.current_price += np.random.randn()
-        self.current_step += 1
-
         # Record whether a trade was executed
         trade_executed = False
         trade_action = None  # Will be 'Buy' or 'Sell' if a trade occurs
@@ -62,9 +71,6 @@ class SimpleTradingEnv:
                 trade_executed = True
                 trade_action = 'Buy'
                 # No immediate reward on buying
-            else:
-                # Trying to buy when already in position; no trade executed
-                pass
         elif action == 1:  # Sell
             if self.position == 1:
                 self.position = 0
@@ -75,29 +81,32 @@ class SimpleTradingEnv:
                 profit_loss = self.current_price - self.entry_price
                 reward = profit_loss
                 self.entry_price = None  # Reset entry price
-            else:
-                # Trying to sell when not in position; no trade executed
-                pass
         elif action == 2:  # Hold
             pass  # Do nothing
 
-        # Calculate net liquidation value
-        self.net_liq_val = self.account_value + (self.position * self.current_price)
+        # Move to the next step
+        self.current_step += 1
 
         # Check if the episode is done
-        if self.current_step >= total_steps:
+        if self.current_step >= self.start_step + self.episode_length:
             self.done = True
-            # If holding a position, need to close it at the end of the episode
-            if self.position == 1:
-                # Sell the position
-                self.position = 0
-                self.account_value += self.current_price  # Add the proceeds
-                trade_executed = True
-                trade_action = 'Sell'
-                # Calculate profit or loss from the trade
-                profit_loss = self.current_price - self.entry_price
-                reward += profit_loss  # Add to any existing reward
-                self.entry_price = None
+        else:
+            self.current_price = self.data.loc[self.current_step, 'Close']
+
+        # Update net liquidation value
+        self.net_liq_val = self.account_value + (self.position * self.current_price)
+
+        # If the episode is done and we still hold a position, close it
+        if self.done and self.position == 1:
+            # Close the position
+            self.position = 0
+            self.account_value += self.current_price
+            trade_executed = True
+            trade_action = 'Sell'
+            # Calculate profit or loss from the trade
+            profit_loss = self.current_price - self.entry_price
+            reward += profit_loss
+            self.entry_price = None
 
         # Include trade information in info dictionary
         info = {'trade_executed': trade_executed, 'trade_action': trade_action}
@@ -179,7 +188,7 @@ def select_action(state, model, epsilon):
         return np.argmax(q_values[0])
 
 # Main Training Loop
-env = SimpleTradingEnv()
+env = SimpleTradingEnv(data, episode_length=episode_length)
 state_size = 1   # Current price
 action_size = 3  # Buy, Sell, Hold
 
@@ -239,17 +248,17 @@ for episode in range(episodes):
             epsilon = max(epsilon_min, epsilon_decay * epsilon)
 
             # Plotting trading results
-            plt.figure()
+            plt.figure(figsize=(12, 6))
             plt.plot(step_numbers, prices, label='Price')
 
             # Plot executed trades
             for idx, trade_action in zip(trade_indices, trade_actions):
                 if trade_action == 'Buy':
                     plt.scatter(step_numbers[idx], prices[idx],
-                                color='green', marker='^', label='Buy' if 'Buy' not in plt.gca().get_legend_handles_labels()[1] else "")
+                                color='green', marker='^', s=100, label='Buy' if 'Buy' not in plt.gca().get_legend_handles_labels()[1] else "")
                 elif trade_action == 'Sell':
                     plt.scatter(step_numbers[idx], prices[idx],
-                                color='red', marker='v', label='Sell' if 'Sell' not in plt.gca().get_legend_handles_labels()[1] else "")
+                                color='red', marker='v', s=100, label='Sell' if 'Sell' not in plt.gca().get_legend_handles_labels()[1] else "")
 
             plt.xlabel('Step')
             plt.ylabel('Price')
