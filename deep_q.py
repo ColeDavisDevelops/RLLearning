@@ -4,6 +4,7 @@ import random
 import tensorflow as tf
 import pandas as pd
 import os  # To handle directory creation
+from tensorflow.keras.preprocessing.sequence import pad_sequences
 
 # Parameters
 gamma = 0.95                  # Discount factor for future rewards
@@ -11,9 +12,8 @@ epsilon = 1.0                 # Initial exploration rate
 epsilon_decay = 0.995         # Decay rate for exploration probability
 epsilon_min = 0.01            # Minimum exploration probability
 batch_size = 32               # Batch size for training
-episodes = 10 # Number of episodes to train
+episodes = 5                 # Number of episodes to train
 target_update_freq = 5        # Frequency to update the target network
-episode_length = 200 # Number of steps per episode
 
 # Ensure the results directory exists
 if not os.path.exists('results'):
@@ -28,25 +28,25 @@ if 'Close' not in data.columns:
 
 # Simple Trading Environment
 class SimpleTradingEnv:
-    def __init__(self, data, episode_length=200):
+    def __init__(self, data):
         self.data = data.reset_index(drop=True)
         self.data_length = len(self.data)
-        self.episode_length = episode_length
         self.initial_account_value = 10000
         self.reset()
 
     def reset(self):
         """Resets the environment to the initial state."""
         self.account_value = self.initial_account_value
-
-        # Randomize the starting point, ensuring enough data for the episode
-        self.start_step = random.randint(0, self.data_length - self.episode_length - 1)
-        self.current_step = self.start_step
+        self.current_step = 0  # Start from the beginning
         self.done = False
         self.position = 0        # 0: No position, 1: Long position
         self.entry_price = None  # Price at which the position was opened
         self.current_price = self.data.loc[self.current_step, 'Close']
-        return np.array([self.current_price])
+        return self._get_observation()
+
+    def _get_observation(self):
+        # Include all past prices up to the current step
+        return self.data['Close'].iloc[:self.current_step + 1].values
 
     def step(self, action):
         """
@@ -88,7 +88,7 @@ class SimpleTradingEnv:
         self.current_step += 1
 
         # Check if the episode is done
-        if self.current_step >= self.start_step + self.episode_length:
+        if self.current_step >= self.data_length - 1:
             self.done = True
         else:
             self.current_price = self.data.loc[self.current_step, 'Close']
@@ -108,20 +108,27 @@ class SimpleTradingEnv:
             reward += profit_loss
             self.entry_price = None
 
+        # Get the next observation
+        if not self.done:
+            observation = self._get_observation()
+        else:
+            observation = np.zeros(self.current_step + 1)  # Return zeros if done
+
         # Include trade information in info dictionary
         info = {'trade_executed': trade_executed, 'trade_action': trade_action}
 
-        return np.array([self.current_price]), reward, self.done, info
+        return observation, reward, self.done, info
 
-# Create the DQN Model
-def create_model():
+# Create the DQN Model with LSTM
+def create_model(input_shape, action_size):
     """
-    Builds a Deep Q-Network model using Keras.
+    Builds a Deep Q-Network model using Keras with LSTM layers.
     """
     model = tf.keras.Sequential([
-        tf.keras.layers.Dense(24, activation='relu', input_shape=(1,)),
-        tf.keras.layers.Dense(24, activation='relu'),
-        tf.keras.layers.Dense(3, activation='linear')  # 3 actions: Buy, Sell, Hold
+        tf.keras.layers.Masking(mask_value=0., input_shape=input_shape),
+        tf.keras.layers.LSTM(64, return_sequences=False),
+        tf.keras.layers.Dense(64, activation='relu'),
+        tf.keras.layers.Dense(action_size, activation='linear')
     ])
     model.compile(loss='mse', optimizer='adam')
     return model
@@ -148,7 +155,7 @@ class ReplayBuffer:
         return random.sample(self.buffer, batch_size)
 
 # Training Function
-def train(replay_buffer, model, target_model, batch_size):
+def train(replay_buffer, model, target_model, batch_size, max_length):
     """
     Trains the model using experiences from the replay buffer.
     """
@@ -156,15 +163,23 @@ def train(replay_buffer, model, target_model, batch_size):
         return
 
     minibatch = replay_buffer.sample(batch_size)
-    states = np.array([exp[0] for exp in minibatch]).reshape(batch_size, -1)
+    states = [exp[0] for exp in minibatch]
     actions = np.array([exp[1] for exp in minibatch])
     rewards = np.array([exp[2] for exp in minibatch])
-    next_states = np.array([exp[3] for exp in minibatch]).reshape(batch_size, -1)
+    next_states = [exp[3] for exp in minibatch]
     dones = np.array([exp[4] for exp in minibatch])
 
+    # Pad sequences
+    states_padded = pad_sequences(states, maxlen=max_length, dtype='float32', padding='pre', truncating='pre')
+    next_states_padded = pad_sequences(next_states, maxlen=max_length, dtype='float32', padding='pre', truncating='pre')
+
+    # Reshape for LSTM input
+    states_padded = states_padded.reshape(batch_size, max_length, 1)
+    next_states_padded = next_states_padded.reshape(batch_size, max_length, 1)
+
     # Predict Q-values for current states and next states
-    q_values = model.predict(states)
-    target_q_values = target_model.predict(next_states)
+    q_values = model.predict(states_padded)
+    target_q_values = target_model.predict(next_states_padded)
 
     # Update Q-values using the Bellman equation
     for i in range(batch_size):
@@ -174,26 +189,32 @@ def train(replay_buffer, model, target_model, batch_size):
             q_values[i][actions[i]] = rewards[i] + gamma * np.amax(target_q_values[i])
 
     # Train the model
-    model.fit(states, q_values, epochs=1, verbose=0)
+    model.fit(states_padded, q_values, epochs=1, verbose=0)
 
 # Epsilon-Greedy Action Selection
-def select_action(state, model, epsilon):
+def select_action(state, model, epsilon, max_length):
     """
     Selects an action using an epsilon-greedy policy.
     """
     if np.random.rand() <= epsilon:
         return np.random.randint(0, 3)  # Random action (Buy, Sell, Hold)
     else:
-        q_values = model.predict(state)
+        # Pad the state
+        padded_state = pad_sequences([state], maxlen=max_length, dtype='float32', padding='pre', truncating='pre')
+        padded_state = padded_state.reshape(1, max_length, 1)
+        q_values = model.predict(padded_state)
         return np.argmax(q_values[0])
 
 # Main Training Loop
-env = SimpleTradingEnv(data, episode_length=episode_length)
-state_size = 1   # Current price
+env = SimpleTradingEnv(data)
 action_size = 3  # Buy, Sell, Hold
 
-model = create_model()
-target_model = create_model()
+max_length = env.data_length  # Maximum possible sequence length
+
+input_shape = (max_length, 1)
+
+model = create_model(input_shape, action_size)
+target_model = create_model(input_shape, action_size)
 target_model.set_weights(model.get_weights())
 
 replay_buffer = ReplayBuffer()
@@ -212,8 +233,7 @@ for episode in range(episodes):
     trade_actions = []    # Actions that were executed ('Buy' or 'Sell')
 
     while True:
-        state = state.reshape(1, -1)
-        action = select_action(state, model, epsilon)
+        action = select_action(state, model, epsilon, max_length)
         next_state, reward, done, info = env.step(action)
         total_reward += reward
         steps += 1
@@ -233,7 +253,7 @@ for episode in range(episodes):
         state = next_state
 
         # Train the model if enough samples are available
-        train(replay_buffer, model, target_model, batch_size)
+        train(replay_buffer, model, target_model, batch_size, max_length)
 
         # Update target network periodically
         if steps % target_update_freq == 0:
