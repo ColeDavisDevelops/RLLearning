@@ -12,7 +12,7 @@ epsilon = 1.0                 # Initial exploration rate
 epsilon_decay = 0.995         # Decay rate for exploration probability
 epsilon_min = 0.01            # Minimum exploration probability
 batch_size = 32               # Batch size for training
-episodes = 5                 # Number of episodes to train
+episodes = 5                   # Number of episodes to train
 target_update_freq = 5        # Frequency to update the target network
 
 # Ensure the results directory exists
@@ -37,7 +37,8 @@ class SimpleTradingEnv:
     def reset(self):
         """Resets the environment to the initial state."""
         self.account_value = self.initial_account_value
-        self.current_step = 0  # Start from the beginning
+        # Randomize the starting point
+        self.current_step = random.randint(0, self.data_length - 2)  # -2 to prevent index out of range
         self.done = False
         self.position = 0        # 0: No position, 1: Long position
         self.entry_price = None  # Price at which the position was opened
@@ -160,7 +161,7 @@ def train(replay_buffer, model, target_model, batch_size, max_length):
     Trains the model using experiences from the replay buffer.
     """
     if len(replay_buffer.buffer) < batch_size:
-        return
+        return None  # Return None if not enough samples
 
     minibatch = replay_buffer.sample(batch_size)
     states = [exp[0] for exp in minibatch]
@@ -174,22 +175,24 @@ def train(replay_buffer, model, target_model, batch_size, max_length):
     next_states_padded = pad_sequences(next_states, maxlen=max_length, dtype='float32', padding='pre', truncating='pre')
 
     # Reshape for LSTM input
-    states_padded = states_padded.reshape(batch_size, max_length, 1)
-    next_states_padded = next_states_padded.reshape(batch_size, max_length, 1)
+    states_padded = states_padded.reshape(len(minibatch), max_length, 1)
+    next_states_padded = next_states_padded.reshape(len(minibatch), max_length, 1)
 
     # Predict Q-values for current states and next states
     q_values = model.predict(states_padded)
     target_q_values = target_model.predict(next_states_padded)
 
     # Update Q-values using the Bellman equation
-    for i in range(batch_size):
+    for i in range(len(minibatch)):
         if dones[i]:
             q_values[i][actions[i]] = rewards[i]
         else:
             q_values[i][actions[i]] = rewards[i] + gamma * np.amax(target_q_values[i])
 
-    # Train the model
-    model.fit(states_padded, q_values, epochs=1, verbose=0)
+    # Train the model and capture the loss
+    history = model.fit(states_padded, q_values, epochs=1, verbose=0)
+    loss = history.history['loss'][0]
+    return loss
 
 # Epsilon-Greedy Action Selection
 def select_action(state, model, epsilon, max_length):
@@ -219,6 +222,9 @@ target_model.set_weights(model.get_weights())
 
 replay_buffer = ReplayBuffer()
 episode_rewards = []          # To track rewards for each episode
+losses = []                   # To track loss values during training
+avg_q_values = []             # To track average Q-values
+epsilon_values = []           # To track epsilon values over episodes
 
 for episode in range(episodes):
     state = env.reset()
@@ -253,14 +259,25 @@ for episode in range(episodes):
         state = next_state
 
         # Train the model if enough samples are available
-        train(replay_buffer, model, target_model, batch_size, max_length)
+        loss = train(replay_buffer, model, target_model, batch_size, max_length)
+        if loss is not None:
+            losses.append(loss)
 
         # Update target network periodically
         if steps % target_update_freq == 0:
             target_model.set_weights(model.get_weights())
 
+        # Track average Q-values
+        # Pad the state
+        padded_state = pad_sequences([state], maxlen=max_length, dtype='float32', padding='pre', truncating='pre')
+        padded_state = padded_state.reshape(1, max_length, 1)
+        q_values = model.predict(padded_state)
+        avg_q = np.mean(q_values[0])
+        avg_q_values.append(avg_q)
+
         if done:
             episode_rewards.append(total_reward)
+            epsilon_values.append(epsilon)
             print(f"Episode: {episode + 1}, Total Reward: {total_reward:.2f}, Steps: {steps}, Epsilon: {epsilon:.2f}")
             print(f"Final Net Liquidation Value: {env.net_liq_val:.2f}")
 
@@ -289,7 +306,8 @@ for episode in range(episodes):
             textstr = f'Final Net Liquidation Value: {env.net_liq_val:.2f}'
             props = dict(boxstyle='round', facecolor='white', alpha=0.5)
             plt.text(0.05, 0.95, textstr, transform=plt.gca().transAxes,
-                     fontsize=10, verticalalignment='top', bbox=props)
+                    fontsize=10, verticalalignment='top', bbox=props)
+
 
             plt.savefig(f'results/trades_episode_{episode + 1}.png')
             plt.close()
@@ -297,12 +315,42 @@ for episode in range(episodes):
 
             break
 
-# Final plot of rewards over episodes
+# Plot of rewards over episodes
 plt.figure()
 plt.plot(episode_rewards)
 plt.xlabel('Episode')
 plt.ylabel('Total Reward')
 plt.title('Total Rewards over Episodes')
-plt.savefig('results/figure.png')
+plt.savefig('results/total_rewards.png')
 plt.close()
-print("Plot saved to results/figure.png.")
+print("Total Rewards plot saved to results/total_rewards.png.")
+
+# Plot of training loss over time
+plt.figure()
+plt.plot(losses)
+plt.xlabel('Training Steps')
+plt.ylabel('Loss')
+plt.title('Training Loss Over Time')
+plt.savefig('results/loss.png')
+plt.close()
+print("Loss plot saved to results/loss.png.")
+
+# Plot of average Q-values over time
+plt.figure()
+plt.plot(avg_q_values)
+plt.xlabel('Training Steps')
+plt.ylabel('Average Q-Value')
+plt.title('Average Q-Values Over Time')
+plt.savefig('results/avg_q_values.png')
+plt.close()
+print("Average Q-Values plot saved to results/avg_q_values.png.")
+
+# Plot of epsilon over episodes
+plt.figure()
+plt.plot(range(1, episodes + 1), epsilon_values)
+plt.xlabel('Episode')
+plt.ylabel('Epsilon')
+plt.title('Epsilon Values over Episodes')
+plt.savefig('results/epsilon_values.png')
+plt.close()
+print("Epsilon plot saved to results/epsilon_values.png.")
